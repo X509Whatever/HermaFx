@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Threading;
 using System.Transactions;
+using HermaFx.Logging;
 
 using Rebus;
 using Rebus.Bus;
@@ -17,15 +17,25 @@ namespace HermaFx.Rebus
 	/// </summary>
 	public sealed class NonEnlistingAmbientTransactionContext : ITransactionContext
 	{
+		#region Inner Types
+
+		public enum _State
+		{
+			Created = 1,
+			Commit,
+			Rollback,
+			Cleaned
+		}
+
+		#endregion
+
 		#region Fields & Properties
+
+		private static readonly ILog _logger = LogProvider.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
 		private readonly ConcurrentDictionary<string, object> _items = new ConcurrentDictionary<string, object>(StringComparer.Ordinal);
 		private readonly Transaction _tx;
-
-		private int _disposed;
-		private int _completed;
-		private int _cleanupRan;
-		private int _txDetached;
+		private readonly string _transactionId;
 
 		/// <summary>
 		/// Returns true because this context requires and tracks an ambient transaction.
@@ -39,6 +49,8 @@ namespace HermaFx.Rebus
 		public event Action AfterRollback = delegate { };
 		public event Action Cleanup = delegate { };
 
+		public static event Action<string, _State> StateObserver = delegate { };
+
 		#endregion
 
 		#region .ctors
@@ -49,9 +61,13 @@ namespace HermaFx.Rebus
 				?? throw new InvalidOperationException(
 					"There's currently no ambient transaction associated with this thread. " +
 					"You can only instantiate this context within a TransactionScope.");
+
+			_transactionId = _tx.TransactionInformation.LocalIdentifier;
+			_logger.Debug("Attaching to ambient transaction {0}", _transactionId);
 			_tx.TransactionCompleted += OnTransactionCompleted;
 
 			TransactionContext.Set(this);
+			NotifyState(_State.Created);
 		}
 
 		#endregion
@@ -78,23 +94,39 @@ namespace HermaFx.Rebus
 
 		#region Private methods
 
-		private void DetachTransactionOnce()
+		private void NotifyState(_State state)
 		{
-			if (Interlocked.Exchange(ref _txDetached, 1) != 0)
-				return;
+			Guard.IsNotDefault(state, nameof(state));
 
+			var handlers = StateObserver;
+			foreach (Action<string, _State> observer in handlers.GetInvocationList())
+			{
+				try
+				{
+					observer(_transactionId, state);
+				}
+				catch (Exception ex)
+				{
+					_logger.Error(ex, "Observer {0} threw an exception while processing state transition {1} for transaction {2}", observer.Method.Name, state, _transactionId);
+				}
+			}
+		}
+
+		private void DetachTransaction()
+		{
+			_logger.Debug("Detaching from ambient transaction {0}", _transactionId);
 			_tx.TransactionCompleted -= OnTransactionCompleted;
 			_tx.Dispose(); //< _tx is a Transaction.Clone(), disposing it only releases this reference.
 		}
 
-		private void RunCleanupOnce()
+		private void RunCleanup()
 		{
-			if (Interlocked.Exchange(ref _cleanupRan, 1) != 0)
-				return;
+			_logger.Debug("Running transaction context cleanup for ambient transaction {0}", _transactionId);
 
 			try
 			{
 				Cleanup();
+				NotifyState(_State.Cleaned);
 			}
 			finally
 			{
@@ -105,33 +137,32 @@ namespace HermaFx.Rebus
 
 		private void OnTransactionCompleted(object sender, TransactionEventArgs e)
 		{
-			if (Interlocked.Exchange(ref _completed, 1) != 0)
-				return;
+			var txInfo = e.Transaction.TransactionInformation;
+
+			_logger.Debug("Ambient transaction {0} completed with status {1}", txInfo.LocalIdentifier, txInfo.Status);
 
 			try
 			{
-				switch (e.Transaction.TransactionInformation.Status)
+				switch (txInfo.Status)
 				{
 				case TransactionStatus.Committed:
 					BeforeCommit();
 					DoCommit();
+					NotifyState(_State.Commit);
 					break;
 
 				case TransactionStatus.Aborted:
+				case TransactionStatus.InDoubt: //< Treat InDoubt as a rollback trigger instead of a commit.
 					DoRollback();
 					AfterRollback();
-					break;
-
-				case TransactionStatus.InDoubt:
-					DoRollback();
-					AfterRollback();
+					NotifyState(_State.Rollback);
 					break;
 				}
 			}
 			finally
 			{
-				DetachTransactionOnce();
-				RunCleanupOnce();
+				DetachTransaction();
+				RunCleanup();
 			}
 		}
 
@@ -139,14 +170,7 @@ namespace HermaFx.Rebus
 
 		public void Dispose()
 		{
-			if (Interlocked.Exchange(ref _disposed, 1) != 0)
-				return;
-
-			if (Volatile.Read(ref _completed) == 0)
-				return;
-
-			DetachTransactionOnce();
-			RunCleanupOnce();
+			// We don't own the ambient transaction, so disposal is a no-op.
 		}
 	}
 }
