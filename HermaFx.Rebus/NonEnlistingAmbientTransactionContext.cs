@@ -25,6 +25,7 @@ namespace HermaFx.Rebus
 		private int _disposed;
 		private int _completed;
 		private int _cleanupRan;
+		private int _txDetached;
 
 		/// <summary>
 		/// Returns true because this context requires and tracks an ambient transaction.
@@ -77,6 +78,15 @@ namespace HermaFx.Rebus
 
 		#region Private methods
 
+		private void DetachTransactionOnce()
+		{
+			if (Interlocked.Exchange(ref _txDetached, 1) != 0)
+				return;
+
+			_tx.TransactionCompleted -= OnTransactionCompleted;
+			_tx.Dispose(); //< _tx is a Transaction.Clone(), disposing it only releases this reference.
+		}
+
 		private void RunCleanupOnce()
 		{
 			if (Interlocked.Exchange(ref _cleanupRan, 1) != 0)
@@ -120,6 +130,7 @@ namespace HermaFx.Rebus
 			}
 			finally
 			{
+				DetachTransactionOnce();
 				RunCleanupOnce();
 			}
 		}
@@ -131,9 +142,10 @@ namespace HermaFx.Rebus
 			if (Interlocked.Exchange(ref _disposed, 1) != 0)
 				return;
 
-			_tx.TransactionCompleted -= OnTransactionCompleted;
-			_tx.Dispose(); //< _tx is a Transaction.Clone(), disposing it only releases this reference.
+			if (Volatile.Read(ref _completed) == 0)
+				return;
 
+			DetachTransactionOnce();
 			RunCleanupOnce();
 		}
 	}
