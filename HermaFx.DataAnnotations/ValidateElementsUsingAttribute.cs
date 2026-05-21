@@ -83,52 +83,13 @@ namespace HermaFx.DataAnnotations
 			return member;
 		}
 
-
-		private IEnumerable<ValidationResult> ValidateProperties(object value, ValidationContext context)
+		private static ValidationContext CreateContextFor(object item, ValidationContext context, int idx2)
 		{
-			if (value == null) return Enumerable.Empty<ValidationResult>();
-
-			var type = value.GetType();
-			var results = new List<ValidationResult>();
-
-			// Now go through the properties and find any that are complex enough that they might
-			// have their own validation requirements. Recurse into each value that we find.
-			foreach (var property in type.GetProperties())
+			return new ValidationContext(item, null, context.Items)
 			{
-				// Ignore properties with no getter.
-				if (!property.CanRead)
-					continue;
-
-				// Ignore indexed properties as there is no way to know how to enumerate them on
-				// their own. Classes should implement IEnumberable if they want these accessed
-				// anyway.
-				if (property.GetIndexParameters().Length > 0)
-					continue;
-
-				// Get the value assigned to the property and recurse into it
-				var value2 = property.GetValue(value, null);
-				var reqattr = property.GetCustomAttribute<RequiredAttribute>();
-				var newctx = new ValidationContext(value2 ?? "", context.Items)
-				{
-					DisplayName = context.DisplayName.IfNotNull(x => string.Join(":", x, property.Name)),
-					MemberName = context.MemberName.IfNotNull(x => string.Join(".", x, property.Name))
-				};
-
-				// Let's first evaluate RequiredAttribute..
-				if (reqattr != null)
-				{
-					var attr = property.GetCustomAttribute<RequiredAttribute>();
-					var res = attr.GetValidationResult(value2, newctx);
-					if (res != ValidationResult.Success) results.Add(res);
-				}
-
-				if (value2 != null)
-				{
-					Validator.TryValidateObject(value2, newctx, results);
-				}
-			}
-
-			return results;
+				DisplayName = context.DisplayName.IfNotNull(x => string.Format("{0}[{1}]", x, idx2)),
+				MemberName = context.MemberName.IfNotNull(x => string.Format("{0}[{1}]", x, idx2))
+			};
 		}
 
 		protected override ValidationResult IsValid(object value, ValidationContext context)
@@ -157,13 +118,24 @@ namespace HermaFx.DataAnnotations
 				foreach (var item in valueAsEnumerable)
 				{
 					var idx2 = idx++;
+
+					// RequiredAttribute needs special treatment, as we might need to evaluate it against null (or default) values..
+					var req = member.GetCustomAttribute<RequiredAttribute>();
+					if (req != null)
+					{
+						var tmp = CreateContextFor(item ?? "", context, idx2);
+						var res = req.GetValidationResult(item, tmp);
+						if (res != ValidationResult.Success) results.Add(res);
+					}
+
+					if (item == null) continue;
+
 					var newctx = new ValidationContext(item, null, context.Items)
 					{
 						DisplayName = context.DisplayName.IfNotNull(x => string.Format("{0}[{1}]", x, idx2)),
 						MemberName = context.MemberName.IfNotNull(x => string.Format("{0}[{1}]", x, idx2))
 					};
 					results.AddRange(ValidateClass(item, newctx, attributes));
-					//results.AddRange(ValidateProperties(item, newctx));
 				}
 			}
 

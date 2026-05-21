@@ -15,6 +15,18 @@ namespace HermaFx.DataAnnotations
 			private string ValueProperty { get; set; }
 		}
 
+		public class RequiredValueMetadata
+		{
+			[Required]
+			private string ValueProperty { get; set; }
+		}
+
+		public class RequiredValueAllowEmptyStringsMetadata
+		{
+			[Required(AllowEmptyStrings = true)]
+			private string ValueProperty { get; set; }
+		}
+
 		public class TestDto
 		{
 			[ValidateValuesUsing(typeof(TestDtoMetadata), "ValueProperty")]
@@ -25,6 +37,18 @@ namespace HermaFx.DataAnnotations
 		{
 			[ValidateValuesUsing(typeof(TestDtoMetadata), "ValueProperty")]
 			public TestDto TestProperty { get; set; }
+		}
+
+		public class RequiredValueDto
+		{
+			[ValidateValuesUsing(typeof(RequiredValueMetadata), "ValueProperty")]
+			public Dictionary<string, string> TestProperty { get; set; }
+		}
+
+		public class RequiredValueAllowEmptyStringsDto
+		{
+			[ValidateValuesUsing(typeof(RequiredValueAllowEmptyStringsMetadata), "ValueProperty")]
+			public Dictionary<string, string> TestProperty { get; set; }
 		}
 
 		[Test]
@@ -61,6 +85,55 @@ namespace HermaFx.DataAnnotations
 
 			var results = new List<ValidationResult>();
 			Assert.Throws<ArgumentNullException>(() => Validator.TryValidateObject(good, null, results));
+		}
+
+		[Test]
+		public void ValidateValuesUsing_Null_DictionaryValue_Not_Required_Return_Ok()
+		{
+			var dto = new TestDto()
+			{
+				TestProperty = new Dictionary<string, string>(new[] { new KeyValuePair<string, string>("dummy", null) })
+			};
+
+			var results = new List<ValidationResult>();
+
+			ExtendedValidator.EnsureIsValid(dto);
+		}
+
+		[Test]
+		public void ValidateValuesUsing_Null_DictionaryValue_WithRequired_ReturnsValidationError()
+		{
+			var dto = new RequiredValueDto()
+			{
+				TestProperty = new Dictionary<string, string>(new[] { new KeyValuePair<string, string>("dummy", null) })
+			};
+
+			Assert.Throws<AggregateValidationException>(() => ExtendedValidator.EnsureIsValid(dto));
+
+			var dtoEmpty = new RequiredValueDto()
+			{
+				TestProperty = new Dictionary<string, string>(new[] { new KeyValuePair<string, string>("dummy", "") })
+			};
+
+			Assert.Throws<AggregateValidationException>(() => ExtendedValidator.EnsureIsValid(dtoEmpty));
+		}
+
+		[Test]
+		public void ValidateValuesUsing_Null_DictionaryValue_WithRequired_AllowEmptyStrings()
+		{
+			var dto = new RequiredValueAllowEmptyStringsDto()
+			{
+				TestProperty = new Dictionary<string, string>(new[] { new KeyValuePair<string, string>("dummy", null) })
+			};
+
+			Assert.Throws<AggregateValidationException>(() => ExtendedValidator.EnsureIsValid(dto));
+
+			var dtoEmpty = new RequiredValueAllowEmptyStringsDto()
+			{
+				TestProperty = new Dictionary<string, string>(new[] { new KeyValuePair<string, string>("dummy", "") })
+			};
+
+			ExtendedValidator.EnsureIsValid(dtoEmpty);
 		}
 
 		[Test]
